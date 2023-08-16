@@ -1,0 +1,144 @@
+- name: configure master data node
+  hosts: all
+  become: true
+  vars:
+    replication_user: replicator 
+    # data_directory: "/var/lib/postgresql/12/main"
+  vars_files: 
+  - secret_vars.yml
+
+  pre_tasks:
+  - name: set master and slave IP dynamically
+    set_fact: 
+      master_ip: "{{ hostvars['manager']['ansible_default_ipv4']['address'] }}"
+      slave_1_ip: "{{ hostvars['slave_1']['ansible_default_ipv4']['address'] }}"
+      slave_2_ip: "{{ hostvars['slave_2']['ansible_default_ipv4']['address'] }}"
+    run_once: true
+
+  tasks:
+  - name: add the repo 
+    shell: sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+
+  - name: add the repo signing key
+    shell: wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+
+  - name: apt update
+    apt:
+      update_cache: yes
+
+  - name: install postgresql-12
+    apt:
+      name:
+      - postgresql-12
+      state: present
+  # mater node setup
+  - name: setup pg_hba.conf 
+    block:
+    - name: allow replication from slave (PostgreSQL Client Authentication Configuration File)
+      lineinfile:
+        path: "/etc/postgresql/12/main/pg_hba.conf"
+        line: "host replication {{ replication_user }} {{ item }}/32 md5"
+        state: present
+      loop:
+      - "{{ slave_1_ip }}"
+      - "{{ slave_2_ip }}"
+    - name: configure the postgresql.conf file (/etc/postgresql/12/main/postgresql.conf)
+      lineinfile:
+        path: "/etc/postgresql/12/main/postgresql.conf"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+      - { regexp: '^\s*#?\s*listen_addresses', line: "listen_addresses = '*'" }
+      - { regexp: '^\s*#?\s*wal_level', line: "wal_level = replica" }
+      - { regexp: '^\s*#?\s*max_wal_senders', line: "max_wal_senders = 3" }
+      - { regexp: '^\s*#?\s*wal_keep_segments', line: "wal_keep_segments = 32" }
+
+    - name: bring back the main file for database from backup 
+      command:
+        cmd: mv /var/lib/postgresql/12/main.bak /var/lib/postgresql/12/main
+        creates: /var/lib/postgresql/12/main 
+    - name: change ownership of directory 
+      file: 
+        path: /var/lib/postgresql/12/main
+        owner: postgres
+        group: postgres
+        recurse: yes 
+    - name: restart postgresql on master
+      service: 
+        name: postgresql
+        state: restarted 
+    
+# ----------------------------------------------
+# this step is not working, need manually setup the role in psql
+# ----------------------------------------------
+
+    # - name: create replicator user 
+    #   # vars:
+    #   #   ansible_become_pass: "{{ replication_password }}"
+    #   #   ansible_unsafe_writes: yes
+    #   shell: "psql -c \"CREATE USER {{ replication_user }} REPLICATION LOGIN ENCRYPTED PASSWORD '{{ replication_password }}';\""
+    #   ignore_errors: yes 
+    #   become: yes
+    #   become_method: sudo
+    #   become_user: postgres
+    - name: output the command line for configuration
+      debug: 
+        msg: "psql -c \"CREATE USER {{ replication_user }} REPLICATION LOGIN ENCRYPTED PASSWORD '{{ replication_password }}';\""
+# ----------------------------------------------
+# this step is not working, need manually setup the role in psql
+# ----------------------------------------------
+
+    when: "'master' in  group_names"
+
+  # slave node setup
+  - name: slave Configuration
+    block:
+    - name: remove existing data as backup
+      shell:
+        cmd: |
+          service postgresql stop
+          mv /var/lib/postgresql/12/main /var/lib/postgresql/12/main.bak
+      ignore_errors: yes 
+    
+    - name: Create main folder on slave server
+      file:
+        path: "/var/lib/postgresql/12/main/"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0700'
+    
+# ----------------------------------------------
+# this step is not working, need manually setup the role in psql, i will output this command lin, so i can copy and paste into the server for configuration
+# ----------------------------------------------
+    # - name: replicate master data to slave 
+    #   shell: 
+    #     cmd: |
+    #       sudo -u postgres pg_basebackup -h {{ master_ip }} -D /var/lib/postgresql/12/main -U {{ replication_user }} -v -P --wal-method=stream
+    - name: output the command line 
+      debug: 
+        msg: "pg_basebackup -h {{ master_ip }} -D /var/lib/postgresql/12/main -U {{ replication_user }} -v -P -R --wal-method=stream"
+# ----------------------------------------------
+# this step is not working, need manually setup the role in psql
+# ----------------------------------------------
+    - name: Set primary_conninfo on standby
+      lineinfile:
+        path: "/etc/postgresql/12/main/postgresql.conf"
+        regexp: '^\s*#?\s*primary_conninfo'
+        line: "primary_conninfo = 'host={{ master_ip }} port=5432 user={{ replication_user }} password={{ replication_password }}'"
+    - name: configure the postgresql.conf file (set wal_sender to 10)
+      lineinfile:
+        path: "/etc/postgresql/12/main/postgresql.conf"
+        regexp: '^\s*#?\s*max_wal_senders'
+        line: "max_wal_senders = 10"
+    - name: Set permissions for PostgreSQL data directory
+      file:
+        path: /var/lib/postgresql/12/main
+        mode: '0700'
+        owner: postgres
+        group: postgres
+    # - name: start postgresql on slaves
+    #   service: 
+    #     name: postgresql
+    #     state: started 
+    when: "'slave' in group_names"

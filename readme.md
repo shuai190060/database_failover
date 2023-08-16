@@ -18,5 +18,9 @@ this repo will contains two small database play-around:
     - Remark: the role creation and replication init are not automatic, so additional steps are needed with outputed commands
         - (in master node): enter the postgresql by `su - postgres -c psql`,  `CREATE USER replicator REPLICATION LOGIN ENCRYPTED PASSWORD '<password will be provisioned>`';
         - (in slave node): in the user Postgres by doing ``su - postgres``, run output command to sync and replicate the database from master node: ``pg_basebackup -h <master ip address> -D /var/lib/postgresql/12/main -U replicator -v -P -R --wal-method=stream``
-
+    - security remark:
+        - for the password, you can overwrite the password, also you can use `ansible-vault` to create a new password variable file to pass it in.
+        - the form of the `secret_vars.yml`
+         replication_password: <password>
+         
 ### Failover setup
