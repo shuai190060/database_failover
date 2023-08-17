@@ -1,0 +1,253 @@
+- name: provision kubernete cluster with kubeadm
+  hosts: all
+  become: true
+
+  # pre_tasks:
+  # - name: set master and slave IP dynamically
+  #   set_fact: 
+  #     master_ip: "{{ hostvars['manager']['ansible_default_ipv4']['address'] }}"
+  #     slave_1_ip: "{{ hostvars['slave_1']['ansible_default_ipv4']['address'] }}"
+  #     slave_2_ip: "{{ hostvars['slave_2']['ansible_default_ipv4']['address'] }}"
+  #   run_once: true
+
+  tasks:
+  # docker runtime CRI (docker engine)
+  - name: install container runtime (CRI)
+    block:
+    - name: update the apt 
+      apt:
+        update_cache: yes
+    - name: install required packages
+      apt: 
+        name: 
+        - ca-certificates
+        - curl
+        - gnupg
+        state: present
+    - name: create /etc/apt/keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+    - name: check gpg key existence
+      stat:
+        path: /etc/apt/keyrings/docker.gpg
+      register: docker_gpg
+    - name: add gpg key
+      shell:
+        cmd: |
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      when: not docker_gpg.stat.exists
+    - name: permission to gpg key
+      file: 
+        path: /etc/apt/keyrings/docker.gpg
+        mode: '0644'
+    - name: setup repo
+      shell:
+        cmd: |
+          echo \
+          "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+          "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
+          sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    - name: update apt 
+      apt:
+        update_cache: yes 
+    - name: install docker components
+      apt: 
+        name: 
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
+        - docker-buildx-plugin
+        - docker-compose-plugin
+        state: present 
+  # install Go
+  - name: install Go 
+    block:
+    - name: download Go tar file 
+      get_url: 
+        url: 'https://go.dev/dl/go1.21.0.linux-amd64.tar.gz'
+        dest: '/tmp/go1.21.0.linux-amd64.tar.gz'
+        mode: '0755'
+    - name: extract and install Go 
+      unarchive: 
+        src: '/tmp/go1.21.0.linux-amd64.tar.gz'
+        dest: '/usr/local/'
+        remote_src: yes
+    - name: update user PATH to include Go path 
+      lineinfile:
+        path: '/home/{{ ansible_user }}/.profile'
+        line: 'export PATH=$PATH:/usr/local/go/bin'
+        create: yes
+    - name: update root PATH to include Go path 
+      lineinfile:
+        path: '/root/.profile'
+        line: 'export PATH=$PATH:/usr/local/go/bin'
+        create: yes
+    - name: export the PATH 
+      shell: |
+       export PATH=$PATH:/usr/local/go/bin
+      args:
+       executable: /bin/bash
+    - name: export the PATH 
+      shell: |
+       echo 'export PATH=$PATH:/usr/local/go/bin' >> /root/.bashrc
+      #  source /root/.bashrc
+
+  # install docker cri-dockerd
+  - name: install cri-dockerd 
+    block:
+      - name: install required repackages
+        apt: 
+          name:
+          - git
+          - wget 
+          - make 
+          state: present
+      - name: clone cri-dockerd repo 
+        git:
+          repo: 'https://github.com/Mirantis/cri-dockerd.git'
+          dest: '/tmp/cri-dockerd'
+          clone: yes
+          update: yes
+
+      - name: cjecl cri-dockerd binary 
+        stat: 
+          path: /usr/local/bin/cri-dockerd
+        register: cri_dockerd_stat
+      - name: build cri-dockerd
+        command:
+          cmd: make cri-dockerd
+          chdir: '/tmp/cri-dockerd'
+        environment:
+          PATH: "/usr/local/go/bin:{{ ansible_env.PATH }}"
+        when: not cri_dockerd_stat.stat.exists
+      - name: install cri-docker.service /usr/local/bin/cri-dockerd
+        block:
+        - name: install cri-dockerd binary to /usr/local/bin/cri-dockerd
+          copy:
+            src: '/tmp/cri-dockerd/cri-dockerd'
+            dest: '/usr/local/bin/cri-dockerd'
+            mode: '0755'
+            owner: 'root'
+            group: 'root'
+            remote_src: yes
+        - name: Install systemd files
+          copy:
+            src: '/tmp/cri-dockerd/packaging/systemd/{{ item }}'
+            dest: '/etc/systemd/system/{{ item }}'
+            remote_src: yes
+          with_items:
+            - cri-docker.socket
+            - cri-docker.service
+        - name: update cri-docker.service 
+          replace:
+            path: '/etc/systemd/system/cri-docker.service'
+            regexp: '/usr/bin/cri-dockerd'
+            replace: '/usr/local/bin/cri-dockerd'
+        - name: Reload systemd
+          systemd:
+            daemon_reload: yes
+
+        - name: Enable and start cri-docker.socket
+          systemd:
+            name: cri-docker.socket
+            enabled: yes
+            state: started
+    # install kubeadm kubelet kubectl 
+  - name: install kubeadm kubelet kubectl 
+    block:
+    - name: install required packages
+      apt: 
+        name:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        state: present
+
+    - name: check gpg key existence
+      stat: 
+        path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      register: k8s_gpg
+    - name: add gpg key 
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      when: not k8s_gpg.stat.exists
+    - name: add kubenertes repo 
+      copy:
+        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        dest: "/etc/apt/sources.list.d/kubernetes.list"
+        remote_src: yes
+    - name: update apt 
+      apt:
+        update_cache: yes 
+    - name: Install kubelet, kubeadm and kubectl
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+      notify: Hold packages
+    - name: check if kubeconfig exists 
+      stat: 
+        path: /etc/kubernetes/admin.conf
+      register: kubeconfig_check
+    - name: Initialize Kubernetes control plane
+      shell: |
+        kubeadm init --control-plane-endpoint={{ ansible_default_ipv4.address }}:6443  --pod-network-cidr=192.168.0.0/16 --cri-socket=unix:///var/run/cri-dockerd.sock --ignore-preflight-errors=all 
+      when: 
+      - "'master' in  group_names"
+      - kubeconfig_check.stat.exists == False
+
+    # configure kubeconfig file for master node
+  - name: configure master node
+    block:
+    - name: create .kube directory
+      file:
+        path: "{{ ansible_env.HOME }}/.kube"
+        state: directory
+    - name: copy admin.conf to user's kube config 
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/root/.kube/config"
+        owner: "0"
+        group: "0"
+        mode: '0644'
+        remote_src: yes
+    - name: Export KUBECONFIG environment variable
+      lineinfile:
+        path: "/root/.bashrc"
+        line: "export KUBECONFIG=/etc/kubernetes/admin.conf"
+    - name: Download Calico manifest
+      get_url:
+        url: "https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml"
+        dest: "/tmp/calico.yaml"
+        mode: '0644'
+      become: yes
+    - name: Apply Calico manifest
+      command:
+        cmd: "kubectl apply -f /tmp/calico.yaml"
+    when: "'master' in  group_names"
+
+  # create the join command
+  - name: create join command in master node 
+    block:
+    - name: generate the kubeadm token 
+      shell: kubeadm token generate
+      register: kubeadm_token
+    - name: create the kubeadm token and join command 
+      shell: "kubeadm token create {{ kubeadm_token.stdout }} --print-join-command --ttl=0"
+      register: join_command
+    when: "'master' in  group_names"
+
+  # join other slave node to master node
+  - name: join the cluster 
+    shell: "{{ hostvars['manager'].join_command.stdout }} --cri-socket=unix:///var/run/cri-dockerd.sock"
+    when: "'slave' in  group_names"
+
+  
+  handlers:
+    - name: Hold packages
+      command: apt-mark hold kubelet kubeadm kubectl
+
