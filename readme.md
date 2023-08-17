@@ -2,8 +2,13 @@
 
 this repo will contains two small database play-around:
 
-- postgresql replication and failover
-- cassandra sharding
+- `postgresql` replication and failover
+- `cassandra` sharding
+- provision kubernetes cluster with `kubeadm`
+
+## Prerequisite
+
+- run `./inventory.sh` to update the ansible inventory file after `terraform apply`
 
 ## Setup for postgresql replication and failover
 
@@ -22,5 +27,37 @@ this repo will contains two small database play-around:
         - for the password, you can overwrite the password, also you can use `ansible-vault` to create a new password variable file to pass it in.
         - the form of the `secret_vars.yml`
          replication_password: <password>
-         
+
 ### Failover setup
+
+### setup
+
+- create ssh keys on each nodes and distribute them to other node for ssh communication
+- script
+    - check if 5432 are on a give IP,
+    - promote other slave1 or slave2 as the master node
+- start the `keepalived` service
+
+### Command to run
+
+- `ansible-playbook -i inventory --vault-id ./.vault_pass.txt database_failover.yml`
+
+## Kubernetes cluster provision(kubeadm)
+
+### Setup
+
+- at least need `t2.small` instance to run this with 2 cpu cores resources
+- security group setup
+    - refer to: https://kubernetes.io/docs/reference/networking/ports-and-protocols/
+
+### Command to run
+
+- `./k8s_ec2_provision.sh create / delete`
+    - run the command to shift the ec2 and security group creation files
+    - `./k8s_ec2_provision.sh create`  to create the resource for k8s
+    - `./k8s_ec2_provision.sh delete` to destroy and resume all the files
+- `ansible-playbook -i inventory kubeadm.yml`
+
+### other
+
+- pod network add-ons: `calico`
